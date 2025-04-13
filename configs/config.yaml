@@ -1,0 +1,73 @@
+
+# --- configs/config.yaml ---
+# Central configuration file for the training pipeline
+
+# Data Configuration
+data:
+  dataset_name: "HuggingFaceFW/fineweb" # Or specific subset like FineWeb-Edu
+  dataset_config_name: null # Specify if needed (e.g., 'sample-10BT')
+  tokenizer_name: "gpt2" # Specify desired Hugging Face tokenizer
+  max_seq_length: 1000000 # Target context window
+  preprocessing_num_workers: 8 # Number of workers for data preprocessing
+  streaming: True # Use streaming for large datasets like FineWeb
+  batch_size_per_device: 1 # Adjust based on GPU memory
+  shuffle_buffer_size: 10000
+
+# Model Configuration
+model:
+  vocab_size: 50257 # Example for GPT-2 tokenizer, adjust based on actual tokenizer
+  d_model: 4096 # Example dimension, adjust for ~6B params
+  num_layers: 32 # Example layer count
+  num_heads: 32 # Example head count
+  d_ff: 16384 # Feed-forward dimension
+  dropout_rate: 0.1
+  # MoE Specific Configuration
+  use_moe: True
+  moe_layer_freq: 2 # Apply MoE every N layers
+  num_experts: 8 # Number of experts per MoE layer
+  num_experts_per_token: 2 # Number of experts to route each token to (Top-K)
+  expert_capacity_factor: 1.25 # Controls expert buffer size
+  router_z_loss_coef: 0.001 # Auxiliary load balancing loss coefficient
+  # Positional Encoding for Long Context
+  positional_encoding_type: "rope" # Rotary Positional Embeddings
+  rope_theta: 10000.0 # RoPE parameter
+  # Add params for YaRN or other interpolation if needed
+
+# Optimizer Configuration (Shampoo)
+optimizer:
+  name: "shampoo"
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.999 # Or specific Shampoo betas if different
+  # Shampoo Specific Hyperparameters (refer to optax-shampoo or chosen implementation)
+  block_size: 1024
+  preconditioning_compute_steps: 10 # Frequency of preconditioner update
+  graft_type: 0 # Grafting type (0: None, 1: SGD, 2: AdaGrad, 3: RMSProp, 4: Adam)
+  nesterov: False # Whether to use Nesterov momentum
+
+# Training Configuration
+training:
+  output_dir: "./output"
+  num_train_steps: 1000000 # Total training steps
+  eval_steps: 5000 # Evaluate every N steps
+  log_steps: 100 # Log metrics every N steps
+  save_steps: 1000 # Checkpoint every N steps (as per requirement)
+  seed: 42
+  # Distributed Training
+  use_distributed: True # Flag to enable/disable distributed setup
+  num_devices: 8 # Example: Number of GPUs/TPUs
+
+# Checkpointing Configuration (Orbax)
+checkpointing:
+  checkpoint_dir: "./checkpoints"
+  keep: 3 # Number of recent checkpoints to keep
+  overwrite: False
+  async_checkpointing: True # Enable asynchronous saving
+
+# Logging Configuration
+logging:
+  use_tensorboard: True
+  use_wandb: False
+  wandb_project: "jax_moe_llm"
+  wandb_entity: null

@@ -1,0 +1,11 @@
+jax>=0.4.23
+flax>=0.8.1
+optax>=0.2.0
+orbax-checkpoint>=0.4.4
+transformers>=4.35.0
+datasets>=2.15.0
+numpy>=1.23.5
+PyYAML>=6.0
+tensorboard # Or wandb
+optax-shampoo # Add if using this library
+google-research-datasets # Add if needed
