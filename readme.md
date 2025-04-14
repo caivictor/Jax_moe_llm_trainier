@@ -20,4 +20,5 @@ python main.py --config configs/config.yaml
 
 
 The --config configs/config.yaml part tells the script where to find your configuration file. Since configs/config.yaml is the default value in main.py, you might also be able to just run python main.py, but explicitly specifying it is good practice.
-This command will load the configuration, initialize the dataset, model, and optimizer, and then start the training loop defined in training/trainer.py. You should see output messages in your terminal indicating the progress (loading data, initializing model, training steps, logging, etc.).
+This command will load the configuration, initialize the dataset, model, and optimizer, and then start the training loop defined in training/trainer.py. You should see output messages in your terminal indicating the progress (loading data, initializing model, training steps, logging, etc.)."# Jax_moe_llm_trainier" 
+"# Jax_moe_llm_trainier" 
