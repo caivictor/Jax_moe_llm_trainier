@@ -8,4 +8,4 @@ numpy>=1.23.5
 PyYAML>=6.0
 tensorboard # Or wandb
 optax-shampoo # Add if using this library
-google-research-datasets # Add if needed
+#google-research-datasets # Add if needed
