@@ -1,3 +1,4 @@
+import jax
 import orbax.checkpoint as ocp
 import os
 from etils import epath # For path manipulation
@@ -35,8 +36,21 @@ def save_checkpoint(manager, step, train_state, config):
     config_path = os.path.join(manager.directory, f'config_step_{step}.yaml')
     try:
         import yaml
+        # Convert SimpleNamespace to dict recursively
+        def namespace_to_dict(ns):
+            if isinstance(ns, type(config)):  # SimpleNamespace
+                return {k: namespace_to_dict(v) for k, v in vars(ns).items()}
+            elif isinstance(ns, dict):
+                return {k: namespace_to_dict(v) for k, v in ns.items()}
+            elif isinstance(ns, list):
+                return [namespace_to_dict(item) for item in ns]
+            else:
+                return ns
+        
+        # Convert config to dict and save
+        config_dict = namespace_to_dict(config)
         with open(config_path, 'w') as f:
-            yaml.dump(config.to_dict(), f) # Assuming config is easily serializable
+            yaml.dump(config_dict, f)
         print(f"Config saved to {config_path}")
     except Exception as e:
         print(f"Warning: Could not save config: {e}")
