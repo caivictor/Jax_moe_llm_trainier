@@ -30,6 +30,7 @@ class LanguageModel(nn.Module):
             blocks.append(TransformerBlock(
                 d_model=self.d_model,
                 num_heads=self.num_heads,
+                max_seq_length=self.max_seq_length, # Pass max_seq_length here
                 d_ff=self.d_ff,
                 dropout_rate=self.dropout_rate,
                 use_moe=is_moe_layer,

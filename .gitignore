@@ -1,1 +1,14 @@
 .venv/
+**/__pycache__/
+output/
+data/__pycache__/dataloader.cpython-312.pyc
+model/__pycache__/language_model.cpython-312.pyc
+model/__pycache__/moe.cpython-312.pyc
+model/__pycache__/positional_encoding.cpython-312.pyc
+optimizer/__pycache__/shampoo.cpython-312.pyc
+training/__pycache__/checkpointing.cpython-312.pyc
+training/__pycache__/train_step.cpython-312.pyc
+training/__pycache__/trainer.cpython-312.pyc
+utils/__pycache__/distributed.cpython-312.pyc
+utils/__pycache__/logging.cpython-312.pyc
+checkpoints/

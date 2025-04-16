@@ -5,26 +5,26 @@ data:
   dataset_name: "HuggingFaceFW/fineweb" # Or specific subset like FineWeb-Edu
   dataset_config_name: null # Specify if needed (e.g., 'sample-10BT')
   tokenizer_name: "gpt2" # Specify desired Hugging Face tokenizer
-  max_seq_length: 1000000 # Target context window
+  max_seq_length: 4096 # Target context window (Reduced from 1M to fit memory)
   preprocessing_num_workers: 8 # Number of workers for data preprocessing
   streaming: True # Use streaming for large datasets like FineWeb
   batch_size_per_device: 1 # Adjust based on GPU memory
-  shuffle_buffer_size: 10000
+  shuffle_buffer_size: 10 #10000
   # Define number of samples for validation when splitting train set
   num_validation_samples: 50000 # e.g., 50 eval steps * 1 batch/device * 8 devices * ~12 samples/batch? Adjust as needed.
 
 # Model Configuration
 model:
   vocab_size: 50257 # Example for GPT-2 tokenizer, adjust based on actual tokenizer
-  d_model: 4096 # Example dimension, adjust for ~6B params
-  num_layers: 32 # Example layer count
-  num_heads: 32 # Example head count
-  d_ff: 16384 # Feed-forward dimension
+  d_model: 1024 # Example dimension, adjust for ~6B params (Reduced from 2048)
+  num_layers: 4 # Example layer count
+  num_heads: 4 # Example head count
+  d_ff: 4096 # Feed-forward dimension (Reduced from 8192, 4*d_model)
   dropout_rate: 0.1
   # MoE Specific Configuration
   use_moe: True
-  moe_layer_freq: 2 # Apply MoE every N layers
-  num_experts: 8 # Number of experts per MoE layer
+  moe_layer_freq: 1 # 2 # Apply MoE every N layers
+  num_experts: 4 # Number of experts per MoE layer (Reduced from 8)
   num_experts_per_token: 2 # Number of experts to route each token to (Top-K)
   capacity_factor: 1.25 # Renamed from expert_capacity_factor - Controls expert buffer size
   router_z_loss_coef: 0.001 # Auxiliary load balancing loss coefficient
@@ -35,7 +35,7 @@ model:
 
 # Optimizer Configuration (Shampoo)
 optimizer:
-  name: "shampoo"
+  name:  "AdamW" #"shampoo"
   learning_rate: 1e-4
   weight_decay: 0.01
   beta1: 0.9

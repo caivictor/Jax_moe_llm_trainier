@@ -7,6 +7,7 @@ from .positional_encoding import RotaryPositionalEncoding # Import RoPE
 class MultiHeadAttention(nn.Module):
     d_model: int
     num_heads: int
+    max_seq_length: int # Add max_seq_length attribute
     dropout_rate: float
 
     def setup(self):
@@ -18,7 +19,8 @@ class MultiHeadAttention(nn.Module):
         self.out_proj = nn.Dense(features=self.d_model, name="out_proj")
         self.dropout = nn.Dropout(rate=self.dropout_rate)
         # RoPE for applying rotary embeddings to Q and K
-        self.rope = RotaryPositionalEncoding(dim=self.head_dim, max_len=2000000) # Increase max_len for 1M context
+        # Use the passed max_seq_length instead of hardcoded value
+        self.rope = RotaryPositionalEncoding(dim=self.head_dim, max_len=self.max_seq_length)
 
     def __call__(self, x, mask=None, deterministic=False, seq_start_index=0):
         batch_size, seq_len, _ = x.shape
@@ -43,16 +45,28 @@ class MultiHeadAttention(nn.Module):
         k = k.transpose((0, 2, 1, 3))
         v = v.transpose((0, 2, 1, 3))
 
-        # Calculate attention scores
-        # (batch, num_heads, seq_len, seq_len)
-        scores = nn.dot_product_attention_weights(
-            q, k,
-            bias=mask, # Apply causal mask here if needed
-            dropout_rng=self.make_rng('dropout') if not deterministic else None,
-            dropout_rate=self.dropout_rate if not deterministic else 0.0,
-            deterministic=deterministic,
-            dtype=jnp.float32 # Use float32 for precision in attention scores
-        )
+        # Calculate attention scores manually to ensure correct shapes
+        # q, k shapes: (batch, num_heads, seq_len, head_dim) -> (1, 4, 4096, 512)
+        attn_weights = jnp.einsum('bhqd,bhkd->bhqk', q, k)
+
+        # Scale scores
+        scale = jnp.sqrt(q.shape[-1]).astype(jnp.float32) # Use float32 for scaling
+        attn_weights = attn_weights / scale
+
+        # Apply mask (using where for stability)
+        # mask shape: (1, 1, 4096, 4096) - broadcasts correctly
+        if mask is not None:
+            attn_weights = jnp.where(mask == 0, jnp.finfo(attn_weights.dtype).min, attn_weights)
+
+        # Apply softmax
+        attn_weights = nn.softmax(attn_weights, axis=-1).astype(q.dtype) # Cast back to original dtype
+
+        # Apply dropout to attention weights
+        if not deterministic:
+            # Use the existing dropout layer, assuming it's suitable. Pass the dropout RNG.
+            attn_weights = self.dropout(attn_weights, deterministic=deterministic, rng=self.make_rng('dropout'))
+
+        scores = attn_weights # Assign to scores variable used later
 
         # Apply attention scores to values
         # (batch, num_heads, seq_len, head_dim)
@@ -70,6 +84,7 @@ class MultiHeadAttention(nn.Module):
 class TransformerBlock(nn.Module):
     d_model: int
     num_heads: int
+    max_seq_length: int # Add max_seq_length attribute
     d_ff: int
     dropout_rate: float
     use_moe: bool = False # Flag to switch between Dense FFN and MoE
@@ -83,6 +98,7 @@ class TransformerBlock(nn.Module):
         self.attention = MultiHeadAttention(
             d_model=self.d_model,
             num_heads=self.num_heads,
+            max_seq_length=self.max_seq_length, # Pass max_seq_length
             dropout_rate=self.dropout_rate,
             name="attention"
         )

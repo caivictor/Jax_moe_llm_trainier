@@ -5,10 +5,9 @@ from flax.training import train_state
 from flax import struct
 import functools
 
-# Define the training state
+# Define the training state, adding dropout RNG
 class TrainState(train_state.TrainState):
-    # Add any additional state variables if needed, e.g., RNGs
-    pass
+    dropout_rng: jax.random.PRNGKey
 
 # Loss Function (Cross-Entropy for Language Modeling)
 def cross_entropy_loss(logits, labels, ignore_id=-100):
@@ -49,11 +48,13 @@ def cross_entropy_loss(logits, labels, ignore_id=-100):
 
 
 # Define the training step function
-def train_step(state, batch, model, dropout_rng, config):
+# Remove dropout_rng from args, access from state instead
+# Add is_distributed flag
+def train_step(state: TrainState, batch, model, config, is_distributed: bool):
     """Performs a single training step."""
 
-    # Generate a new dropout RNG key for each step
-    dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
+    # Generate a new dropout RNG key from the one stored in the state
+    dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
     def compute_loss(params):
         # Get input_ids and attention_mask from the batch
@@ -104,20 +105,22 @@ def train_step(state, batch, model, dropout_rng, config):
     (loss, metrics), grads = grad_fn(state.params)
 
     # --- Distributed Training: Gradient Averaging ---
-    # If using pmap, average gradients across devices
-    if config.training.use_distributed:
+    # Average gradients across devices only if actually distributed
+    if is_distributed:
          grads = jax.lax.pmean(grads, axis_name='batch')
          metrics = jax.lax.pmean(metrics, axis_name='batch')
 
 
     # Update model state (apply gradients)
-    new_state = state.apply_gradients(grads=grads)
+    # Also update the dropout RNG in the state
+    new_state = state.apply_gradients(grads=grads).replace(dropout_rng=new_dropout_rng)
 
-    # Return updated state, metrics, and new RNG
-    return new_state, metrics, new_dropout_rng
+    # Return updated state and metrics
+    return new_state, metrics
 
 # Define the evaluation step function (similar to train_step but without gradients)
-def eval_step(state, batch, model, config):
+# Add is_distributed flag
+def eval_step(state, batch, model, config, is_distributed: bool):
     """Performs a single evaluation step."""
     input_ids = batch['input_ids']
     attention_mask = batch.get('attention_mask')
@@ -147,8 +150,8 @@ def eval_step(state, batch, model, config):
         'eval_num_tokens': num_tokens
     }
 
-    # Average metrics across devices if distributed
-    if config.training.use_distributed:
+    # Average metrics across devices only if actually distributed
+    if is_distributed:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
 
     return metrics

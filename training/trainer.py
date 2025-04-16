@@ -85,7 +85,7 @@ def train(config):
         apply_fn=model.apply,
         params=params,
         tx=optimizer,
-        dropout_rng=dropout_key # Store base key in state
+        dropout_rng=dropout_key # Pass the key here, TrainState now accepts it
     )
     print("Optimizer and TrainState created.")
 
@@ -102,20 +102,20 @@ def train(config):
         state = flax_utils.replicate(state)
         # Define pmapped train and eval steps
         p_train_step = jax.pmap(
-            functools.partial(train_step, model=model, config=config),
+            functools.partial(train_step, model=model, config=config, is_distributed=is_distributed),
             axis_name='batch',
             donate_argnums=(0,) # Donate state for potential memory optimization
         )
         p_eval_step = jax.pmap(
-            functools.partial(eval_step, model=model, config=config),
+            functools.partial(eval_step, model=model, config=config, is_distributed=is_distributed),
             axis_name='batch'
         )
         print("State replicated and pmapped functions prepared for distributed training.")
     else:
         # If not distributed, JIT the functions
         # No need to split dropout key, it's used directly
-        p_train_step = jax.jit(functools.partial(train_step, model=model, config=config))
-        p_eval_step = jax.jit(functools.partial(eval_step, model=model, config=config))
+        p_train_step = jax.jit(functools.partial(train_step, model=model, config=config, is_distributed=is_distributed))
+        p_eval_step = jax.jit(functools.partial(eval_step, model=model, config=config, is_distributed=is_distributed))
         print("JIT functions prepared for single-device training.")
 
 
@@ -140,7 +140,7 @@ def train(config):
             batch = shard(batch) # Shard the PyTree batch across devices
 
         # Perform a training step
-        # The train_step function now manages its own RNG splitting internally
+        # train_step now updates the RNG within the state and returns only state, metrics
         state, metrics = p_train_step(state, batch)
 
         # Collect metrics (metrics are potentially replicated if distributed)

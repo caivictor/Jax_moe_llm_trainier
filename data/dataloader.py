@@ -171,7 +171,17 @@ def get_datasets(config):
             count += 1
             # Filter out potentially empty examples after tokenization/mapping
             if example and 'input_ids' in example and example['input_ids'].size > 0:
-                 buffer.append(example)
+                 # Select only necessary columns before appending to buffer
+                 required_data = {
+                     "input_ids": example["input_ids"],
+                     "attention_mask": example.get("attention_mask") # Use .get for safety
+                 }
+                 # Ensure attention_mask is present, create if not (should be added by tokenizer)
+                 if required_data["attention_mask"] is None:
+                     print(f"Warning: Missing attention_mask for an example in {dataset_name}. Creating default.")
+                     required_data["attention_mask"] = np.ones_like(required_data["input_ids"])
+
+                 buffer.append(required_data)
                  if len(buffer) == batch_size:
                      batch = collate_fn(buffer)
                      if batch: # Only yield if collation was successful

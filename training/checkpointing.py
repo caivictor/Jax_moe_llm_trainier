@@ -12,11 +12,13 @@ def create_checkpoint_manager(config):
         # best_fn=lambda metrics: metrics['eval_loss'], # Example: Save best based on eval loss
         # best_mode='min'
     )
+    # Ensure the checkpoint directory path is absolute
+    absolute_checkpoint_dir = os.path.abspath(config.checkpointing.checkpoint_dir)
     mngr = ocp.CheckpointManager(
-        epath.Path(config.checkpointing.checkpoint_dir),
+        epath.Path(absolute_checkpoint_dir), # Use absolute path
         options=options
     )
-    print(f"Checkpoint manager initialized at: {config.checkpointing.checkpoint_dir}")
+    print(f"Checkpoint manager initialized at: {absolute_checkpoint_dir}")
     return mngr
 
 def save_checkpoint(manager, step, train_state, config):

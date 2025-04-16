@@ -114,34 +114,9 @@ class SparseMoE(nn.Module):
         # 4. Un-permute: Map the expert outputs back to the original token positions.
         # 5. Combine: Combine outputs using the router weights.
 
-        # --- Simplified Combination (Illustrative - Inefficient) ---
-        expert_outputs = []
-        experts = [
-            FeedForwardExpert(d_model=self.d_model, d_ff=self.d_ff, dropout_rate=self.dropout_rate, name=f"expert_{i}")
-            for i in range(self.num_experts)
-        ]
-
-        final_output = jnp.zeros_like(x_flat)
-        for i in range(self.num_experts):
-            # Get the indices and weights for tokens assigned to this expert
-            # This requires finding which tokens selected expert `i` in their top-k
-            token_indices_for_expert_i, = jnp.where(expert_indices == i)
-            weights_for_expert_i = expert_weights[token_indices_for_expert_i] # Need careful indexing
-
-            # Select the input tokens for this expert
-            inputs_for_expert_i = x_flat[token_indices_for_expert_i]
-
-            # Apply the expert (handle potential empty inputs)
-            if inputs_for_expert_i.shape[0] > 0:
-                 output_expert_i = experts[i](inputs_for_expert_i, deterministic)
-                 # Combine outputs weighted by router probabilities
-                 # This needs careful scatter/update based on original indices
-                 # final_output = final_output.at[token_indices_for_expert_i].add(output_expert_i * weights_for_expert_i[:,None]) # Approximate
-            # This simplified loop is highly inefficient and conceptually flawed for proper MoE.
-            # A real implementation requires efficient dispatch/combine, often using custom kernels or libraries.
-
-
         # --- Placeholder for actual efficient implementation ---
+        # The previous loop was illustrative, inefficient, and caused JIT errors.
+        # Removing it and relying on the single expert placeholder below.
         # Assume `final_output` is computed efficiently using dispatch/combine
         # based on `expert_weights` and `expert_indices`.
         # This part is non-trivial in JAX. Libraries like Tutel or custom implementations
@@ -157,4 +132,3 @@ class SparseMoE(nn.Module):
         final_output_reshaped = final_output_placeholder.reshape(batch_size, seq_len, d_model) # Use placeholder output
 
         return final_output_reshaped, aux_loss
-

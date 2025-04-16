@@ -1,4 +1,5 @@
 import optax
+from optax import constant_schedule # Import constant_schedule
 
 # Function to get the configured optimizer
 def get_optimizer(config):
@@ -6,15 +7,19 @@ def get_optimizer(config):
     Creates the optimizer based on the config. Currently supports AdamW and Shampoo.
     """
     optimizer_name = config.optimizer.name.lower()
-    lr = config.optimizer.learning_rate
+    lr = float(config.optimizer.learning_rate) # Explicitly cast to float
 
     if optimizer_name == "adamw":
-        print("Using AdamW optimizer")
-        return optax.adamw(
-            learning_rate=lr,
-            b1=config.optimizer.beta1,
-            b2=config.optimizer.beta2,
-            weight_decay=config.optimizer.weight_decay
+        print("Using chained Adam optimizer components (debugging TypeError)")
+        # Construct Adam equivalent using chain to isolate potential issues
+        return optax.chain(
+            optax.scale_by_adam(
+                b1=config.optimizer.beta1,
+                b2=config.optimizer.beta2,
+                eps=1e-8 # Default Adam epsilon
+            ),
+            # Remove the diagnostic print from the chain arguments
+            optax.scale(-lr) # Scale by negative learning rate
         )
     elif optimizer_name == "shampoo":
         print("Using Shampoo optimizer")
@@ -24,7 +29,7 @@ def get_optimizer(config):
             print("Imported Shampoo from optax.contrib")
             # Instantiate Shampoo using parameters from config
             return shampoo(
-                learning_rate=lr,
+                learning_rate=constant_schedule(lr), # Use constant schedule
                 block_size=config.optimizer.block_size,
                 beta1=config.optimizer.beta1, # Shampoo might use different beta names/defaults
                 beta2=config.optimizer.beta2,
@@ -49,7 +54,7 @@ def get_optimizer(config):
                 # Instantiate Shampoo using parameters from config
                 # Note: Parameter names might differ slightly from optax.contrib version
                 return shampoo(
-                    learning_rate=lr,
+                    learning_rate=constant_schedule(lr), # Use constant schedule
                     block_size=config.optimizer.block_size,
                     beta1=config.optimizer.beta1,
                     beta2=config.optimizer.beta2,
@@ -65,12 +70,16 @@ def get_optimizer(config):
             except ImportError:
                 print("ERROR: Shampoo optimizer specified but couldn't be imported from optax.contrib or optax-shampoo.")
                 print("Please install 'optax-shampoo' or ensure Shampoo is available in optax.contrib.")
-                print("Falling back to AdamW.")
-                return optax.adamw(
-                    learning_rate=lr,
-                    b1=config.optimizer.beta1,
-                    b2=config.optimizer.beta2,
-                    weight_decay=config.optimizer.weight_decay
+                print("Falling back to chained Adam components (debugging TypeError).")
+                # Construct Adam equivalent using chain
+                return optax.chain(
+                    optax.scale_by_adam(
+                        b1=config.optimizer.beta1,
+                        b2=config.optimizer.beta2,
+                        eps=1e-8 # Default Adam epsilon
+                    ),
+                    # Remove the diagnostic print from the chain arguments
+                    optax.scale(-lr) # Scale by negative learning rate
                 )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
