@@ -32,5 +32,3 @@ The following command-line arguments are supported:
     *   Example: `python main.py --eval_only`
     *   Example (with custom config): `python main.py --config configs/config.yaml --eval_only`
 
-"# Jax_moe_llm_trainier"
-"# Jax_moe_llm_trainier"
