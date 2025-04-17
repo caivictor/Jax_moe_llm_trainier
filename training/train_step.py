@@ -53,8 +53,18 @@ def cross_entropy_loss(logits, labels, ignore_id=-100):
 def train_step(state: TrainState, batch, model, config, is_distributed: bool):
     """Performs a single training step."""
 
-    # Generate a new dropout RNG key from the one stored in the state
-    dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
+    # --- RNG Handling (Conditional on Distribution) ---
+    if is_distributed:
+        # Distributed: Use fold_in with axis_index for per-device keys
+        # 1. Generate the key for the *next* step's state by splitting the *base* key.
+        new_base_dropout_rng_for_state = jax.random.split(state.dropout_rng, 1)[0]
+        # 2. Create a unique dropout key for *this specific device* using fold_in.
+        #    Requires the pmap call to use axis_name='batch'.
+        dropout_rng_for_step = jax.random.fold_in(state.dropout_rng, jax.lax.axis_index('batch'))
+    else:
+        # Not Distributed: Simple split for the step key and the next state key
+        dropout_rng_for_step, new_base_dropout_rng_for_state = jax.random.split(state.dropout_rng)
+    # --- End RNG Handling ---
 
     def compute_loss(params):
         # Get input_ids and attention_mask from the batch
@@ -81,7 +91,8 @@ def train_step(state: TrainState, batch, model, config, is_distributed: bool):
             attention_mask=attention_mask,
             deterministic=False, # Use dropout during training
             train=True,
-            rngs={'dropout': dropout_rng}
+            # Use the device-specific key for the forward pass
+            rngs={'dropout': dropout_rng_for_step}
         )
 
         # Calculate the primary loss (cross-entropy)
@@ -112,8 +123,8 @@ def train_step(state: TrainState, batch, model, config, is_distributed: bool):
 
 
     # Update model state (apply gradients)
-    # Also update the dropout RNG in the state
-    new_state = state.apply_gradients(grads=grads).replace(dropout_rng=new_dropout_rng)
+    # Store the *new base key* generated earlier for the next step's state.
+    new_state = state.apply_gradients(grads=grads).replace(dropout_rng=new_base_dropout_rng_for_state)
 
     # Return updated state and metrics
     return new_state, metrics
