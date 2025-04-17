@@ -19,9 +19,9 @@ from flax.training.common_utils import shard # For sharding data
 
 
 # --- Generation using jax.lax.scan ---
-@functools.partial(jax.jit, static_argnums=(0, 3, 4)) # JIT compile, static args for model, max_length, temperature
-def generate_text_scan(model, params, input_ids, max_length=50, temperature=1.0, pad_token_id=0):
-    """Generates text using greedy decoding with jax.lax.scan and fixed-size carry."""
+@functools.partial(jax.jit, static_argnums=(0, 4, 5)) # JIT compile, static args for model, max_length, temperature
+def generate_text_scan(model, params, prng_key, input_ids, max_length=50, temperature=1.0, pad_token_id=0):
+    """Generates text using sampling with jax.lax.scan and fixed-size carry."""
 
     # Ensure input_ids has a batch dimension
     if input_ids.ndim == 1:
@@ -44,8 +44,11 @@ def generate_text_scan(model, params, input_ids, max_length=50, temperature=1.0,
     def generation_step(carry, _):
         """One step of the generation loop with fixed-size carry."""
         # Carry: (current_full_sequence, current_generation_index)
-        # Carry: (current_full_sequence, current_generation_index)
-        current_seq_tensor, current_index = carry
+        # Carry: (current_full_sequence, current_generation_index, current_prng_key)
+        current_seq_tensor, current_index, current_key = carry
+        # Split key for this step's sampling
+        step_key, next_key = jax.random.split(current_key)
+
         # No need to slice dynamically. Pass the full tensor.
         # The model's internal causal mask handles attending only to valid tokens.
         model_input_ids = current_seq_tensor
@@ -63,20 +66,20 @@ def generate_text_scan(model, params, input_ids, max_length=50, temperature=1.0,
         # Get logits for the *last valid token* position (index - 1)
         last_token_logits = logits[:, -1, :] / temperature # Shape: (batch_size, vocab_size)
 
-        # Greedy sampling
-        next_token_id = jnp.argmax(last_token_logits, axis=-1) # Shape: (batch_size,)
+        # Sample from the distribution
+        next_token_id = jax.random.categorical(step_key, last_token_logits, axis=-1) # Shape: (batch_size,)
 
         # Update the pre-allocated tensor at the current index
         # Shape of next_token_id: (batch_size,) -> needs reshape for update
         # Shape of slice to update: (batch_size, 1) at index `current_index`
         updated_seq_tensor = current_seq_tensor.at[:, current_index].set(next_token_id)
 
-        # Return the updated tensor and the *next* index as the carry
-        # The shape of the carry (tensor shape, scalar shape) remains constant
-        return (updated_seq_tensor, current_index + 1), next_token_id
+        # Return the updated tensor, the *next* index, and the *next* key as the carry
+        # The shape of the carry (tensor shape, scalar shape, key shape) remains constant
+        return (updated_seq_tensor, current_index + 1, next_key), next_token_id
 
-    # Initial carry state
-    initial_carry = (full_sequence, initial_seq_len)
+    # Initial carry state (add the initial PRNG key)
+    initial_carry = (full_sequence, initial_seq_len, prng_key)
 
     # Run the scan loop
     final_carry, _ = jax.lax.scan(
@@ -184,8 +187,10 @@ def run_evaluation(step, state, model, eval_loader, tokenizer, p_eval_step, logg
              generated_ids = generate_text_scan(
                  model,
                  inference_params, # Use unreplicated params
+                 jax.random.PRNGKey(int(time.time())), # Pass a PRNG key for sampling
                  tokenized_prompt,
-                 max_length=generate_max_length # Use configured/default length
+                 max_length=generate_max_length, # Use configured/default length
+                 temperature=1.0 # Explicitly pass temperature (can be configured later)
              )
              generated_ids = jax.device_get(generated_ids) # Ensure result is on host CPU
 
