@@ -17,8 +17,197 @@ from utils.logging import Logger # Corrected import
 from utils.distributed import setup_distributed # Corrected import
 from flax.training.common_utils import shard # For sharding data
 
-def train(config):
-    """Main training loop."""
+
+# --- Generation using jax.lax.scan ---
+@functools.partial(jax.jit, static_argnums=(0, 3, 4)) # JIT compile, static args for model, max_length, temperature
+def generate_text_scan(model, params, input_ids, max_length=50, temperature=1.0, pad_token_id=0):
+    """Generates text using greedy decoding with jax.lax.scan and fixed-size carry."""
+
+    # Ensure input_ids has a batch dimension
+    if input_ids.ndim == 1:
+        input_ids_batched = input_ids[None, :]
+        was_1d = True
+    else:
+        input_ids_batched = input_ids
+        was_1d = False
+
+    batch_size = input_ids_batched.shape[0]
+    initial_seq_len = input_ids_batched.shape[1]
+    num_steps_to_generate = max_length - initial_seq_len
+
+    # Pre-allocate the full sequence tensor
+    # Shape: (batch_size, max_length)
+    # Initialize with pad tokens, then fill with the prompt
+    full_sequence = jnp.full((batch_size, max_length), pad_token_id, dtype=input_ids_batched.dtype)
+    full_sequence = full_sequence.at[:, :initial_seq_len].set(input_ids_batched)
+
+    def generation_step(carry, _):
+        """One step of the generation loop with fixed-size carry."""
+        # Carry: (current_full_sequence, current_generation_index)
+        # Carry: (current_full_sequence, current_generation_index)
+        current_seq_tensor, current_index = carry
+        # No need to slice dynamically. Pass the full tensor.
+        # The model's internal causal mask handles attending only to valid tokens.
+        model_input_ids = current_seq_tensor
+
+        # Model forward pass
+        outputs = model.apply(
+            {'params': params},
+            input_ids=model_input_ids, # Pass the full tensor
+            attention_mask=None, # Causal mask handled internally
+            train=False,
+            deterministic=True
+        )
+        logits, _ = outputs # Shape: (batch_size, current_index, vocab_size)
+
+        # Get logits for the *last valid token* position (index - 1)
+        last_token_logits = logits[:, -1, :] / temperature # Shape: (batch_size, vocab_size)
+
+        # Greedy sampling
+        next_token_id = jnp.argmax(last_token_logits, axis=-1) # Shape: (batch_size,)
+
+        # Update the pre-allocated tensor at the current index
+        # Shape of next_token_id: (batch_size,) -> needs reshape for update
+        # Shape of slice to update: (batch_size, 1) at index `current_index`
+        updated_seq_tensor = current_seq_tensor.at[:, current_index].set(next_token_id)
+
+        # Return the updated tensor and the *next* index as the carry
+        # The shape of the carry (tensor shape, scalar shape) remains constant
+        return (updated_seq_tensor, current_index + 1), next_token_id
+
+    # Initial carry state
+    initial_carry = (full_sequence, initial_seq_len)
+
+    # Run the scan loop
+    final_carry, _ = jax.lax.scan(
+        generation_step,
+        initial_carry,      # Initial carry: (tensor, start_index)
+        None,               # No per-step input needed
+        length=num_steps_to_generate
+    )
+
+    # The final generated sequence is the first element of the final carry
+    final_sequence_batched = final_carry[0]
+
+    # Remove batch dimension if the original input was 1D
+    if was_1d:
+        final_sequence = final_sequence_batched[0]
+    else:
+        final_sequence = final_sequence_batched
+
+    return final_sequence
+
+
+# --- Evaluation Function ---
+def run_evaluation(step, state, model, eval_loader, tokenizer, p_eval_step, logger, config, is_distributed):
+    """Runs the evaluation loop and logs metrics."""
+    print(f"Running evaluation at step {step}...")
+    eval_metrics_list = []
+    eval_start_time = time.time()
+    # Limited number of eval steps or iterate through eval_loader once
+    # Use hasattr for SimpleNamespace compatibility
+    eval_steps_limit = config.training.eval_steps_limit if hasattr(config.training, 'eval_steps_limit') else 50
+    eval_count = 0
+    try:
+        for eval_batch in eval_loader:
+            if eval_count >= eval_steps_limit:
+                break # Stop after a fixed number of eval batches
+
+            if is_distributed:
+                eval_batch = shard(eval_batch)
+
+            metrics = p_eval_step(state, eval_batch)
+            eval_metrics_list.append(metrics)
+            eval_count += 1
+
+    except StopIteration:
+         print("Evaluation data loader finished.") # Handle case where eval loader is exhausted
+    except Exception as e:
+         print(f"Error during evaluation loop: {e}") # Catch other potential errors
+
+
+    # Aggregate eval metrics
+    if eval_metrics_list:
+         # Unreplicate/average metrics similar to training log
+         if is_distributed:
+              unreplicated_eval_metrics = [flax_utils.unreplicate(m) for m in eval_metrics_list]
+              avg_eval_metrics = jax.tree_util.tree_map(lambda *x: np.mean([i.item() for i in x]), *unreplicated_eval_metrics)
+         else:
+              avg_eval_metrics = jax.tree_util.tree_map(lambda *x: np.mean([i.item() for i in x]), *eval_metrics_list)
+
+
+         eval_duration = time.time() - eval_start_time
+         print(f"Evaluation finished in {eval_duration:.2f}s over {eval_count} batches.")
+         print(f"Step: {step} | Eval Loss: {avg_eval_metrics['eval_loss']:.4f} | Eval Perplexity: {avg_eval_metrics['eval_perplexity']:.2f}")
+         logger.log_metrics(avg_eval_metrics, step, prefix="eval")
+
+         # --- Add Inference Here ---
+         # Get unreplicated parameters for generation
+         inference_params = state.params
+         if is_distributed:
+             # Ensure we get the parameters from the first device if replicated
+             inference_params = flax_utils.unreplicate(state).params
+
+         # Define the prompt and tokenize it
+         prompt = "I am a "
+         # Ensure tokenizer has 'encode' method and returns 'input_ids' or similar
+         # Adjust based on your actual tokenizer implementation (e.g., Hugging Face, SentencePiece)
+         try:
+             # Attempt common encoding patterns
+             if hasattr(tokenizer, 'encode') and callable(tokenizer.encode):
+                 # Check if it returns a dict (like HF tokenizers)
+                 encoded_output = tokenizer.encode(prompt, return_tensors="np")
+                 if isinstance(encoded_output, dict) and 'input_ids' in encoded_output:
+                     tokenized_prompt = encoded_output['input_ids']
+                 else: # Assume it returns IDs directly
+                     tokenized_prompt = jnp.array(encoded_output)
+
+                 # Remove batch dimension if tokenizer adds one and we only want 1D
+                 if tokenized_prompt.ndim > 1 and tokenized_prompt.shape[0] == 1:
+                     tokenized_prompt = tokenized_prompt[0]
+             else:
+                 raise ValueError("Tokenizer does not have a standard 'encode' method.")
+
+         except Exception as e:
+             print(f"Error tokenizing prompt: {e}. Skipping generation.")
+             tokenized_prompt = None # Handle error case
+
+         if tokenized_prompt is not None:
+             print(f"\n--- Generating text from prompt: '{prompt}' ---")
+             # Generate text (adjust max_length as needed)
+             # Use jax.device_get to bring result back to host if needed.
+             # Use hasattr for SimpleNamespace compatibility
+             default_generate_length = config.data.max_seq_length // 2
+             generate_max_length = config.training.generate_max_length if hasattr(config.training, 'generate_max_length') else default_generate_length
+
+             # --- Use the new scan-based generation function ---
+             generated_ids = generate_text_scan(
+                 model,
+                 inference_params, # Use unreplicated params
+                 tokenized_prompt,
+                 max_length=generate_max_length # Use configured/default length
+             )
+             generated_ids = jax.device_get(generated_ids) # Ensure result is on host CPU
+
+             # Decode the generated IDs
+             # Ensure tokenizer has 'decode' method
+             try:
+                 if hasattr(tokenizer, 'decode') and callable(tokenizer.decode):
+                     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                     print(f"Generated Text: {generated_text}")
+                 else:
+                     raise ValueError("Tokenizer does not have a standard 'decode' method.")
+             except Exception as e:
+                 print(f"Error decoding generated text: {e}")
+             print("-------------------------------------------------\n")
+
+    else:
+         print("No metrics collected during evaluation.")
+
+
+# --- Main Training Function ---
+def train(config, eval_only=False): # Add eval_only parameter
+    """Main training and evaluation function."""
 
     # --- Setup (Random Keys, Distributed Env) ---
     key = jax.random.PRNGKey(config.training.seed)
@@ -124,13 +313,28 @@ def train(config):
     os.makedirs(config.training.output_dir, exist_ok=True)
     logger = Logger(config) # Initialize logger (TensorBoard/WandB)
 
+    # --- Check if running evaluation only ---
+    if eval_only:
+        print("Running in evaluation-only mode.")
+        if start_step == 0:
+            print("Warning: No checkpoint found to evaluate. Exiting.")
+            return # Or raise an error
+
+        # Run evaluation using the restored state (start_step is the step of the loaded checkpoint)
+        run_evaluation(start_step, state, model, eval_loader, tokenizer, p_eval_step, logger, config, is_distributed)
+        logger.close()
+        print("Evaluation complete.")
+        return # Exit after evaluation
+
     # --- Training Loop ---
     print(f"Starting training from step {start_step + 1}...")
     train_metrics_list = [] # Collect metrics over log_steps
     last_log_time = time.time()
+    final_step = 0 # Keep track of the last step reached
 
     # Use the data loader generator
     for step, batch in enumerate(train_loader, start=start_step + 1):
+        final_step = step # Update final step
         # Stop training if max steps reached
         if step > config.training.num_train_steps:
             break
@@ -140,23 +344,18 @@ def train(config):
             batch = shard(batch) # Shard the PyTree batch across devices
 
         # Perform a training step
-        # train_step now updates the RNG within the state and returns only state, metrics
         state, metrics = p_train_step(state, batch)
 
-        # Collect metrics (metrics are potentially replicated if distributed)
+        # Collect metrics
         train_metrics_list.append(metrics)
 
         # --- Logging ---
         if step % config.training.log_steps == 0:
-            # Aggregate metrics collected since last log
             if train_metrics_list:
-                # If distributed, metrics are replicated. Unreplicate and average.
                 if is_distributed:
-                    # Unreplicate first, then average over the list
                     unreplicated_metrics = [flax_utils.unreplicate(m) for m in train_metrics_list]
                     aggregated_metrics = jax.tree_util.tree_map(lambda *x: np.mean([i.item() for i in x]), *unreplicated_metrics)
                 else:
-                    # If not distributed, metrics are not replicated. Average over the list.
                     aggregated_metrics = jax.tree_util.tree_map(lambda *x: np.mean([i.item() for i in x]), *train_metrics_list)
 
                 current_time = time.time()
@@ -165,81 +364,38 @@ def train(config):
 
                 print(f"Step: {step}/{config.training.num_train_steps} | "
                       f"Loss: {aggregated_metrics['loss']:.4f} | "
-                    #   f"LM Loss: {aggregated_metrics['lm_loss']:.4f} | " # Optional print
-                    #   f"Aux Loss: {aggregated_metrics['moe_aux_loss']:.4f} | " # Optional print
                       f"Perplexity: {aggregated_metrics['perplexity']:.2f} | "
                       f"Steps/sec: {steps_per_sec:.2f}")
 
-                # Log to TensorBoard/WandB
                 logger.log_metrics(aggregated_metrics, step, prefix="train")
-                train_metrics_list = [] # Reset metrics buffer
+                train_metrics_list = []
             else:
                 print(f"Step: {step}/{config.training.num_train_steps} | No metrics collected for logging interval.")
 
-
         # --- Evaluation ---
         if step % config.training.eval_steps == 0:
-            print(f"Running evaluation at step {step}...")
-            eval_metrics_list = []
-            eval_start_time = time.time()
-            # Limited number of eval steps or iterate through eval_loader once
-            eval_steps_limit = 50 # Example limit, configure if needed
-            eval_count = 0
-            try:
-                for eval_batch in eval_loader:
-                    if eval_count >= eval_steps_limit:
-                        break # Stop after a fixed number of eval batches
-
-                    if is_distributed:
-                        eval_batch = shard(eval_batch)
-
-                    metrics = p_eval_step(state, eval_batch)
-                    eval_metrics_list.append(metrics)
-                    eval_count += 1
-
-            except StopIteration:
-                 print("Evaluation data loader finished.") # Handle case where eval loader is exhausted
-            except Exception as e:
-                 print(f"Error during evaluation loop: {e}") # Catch other potential errors
-
-
-            # Aggregate eval metrics
-            if eval_metrics_list:
-                 # Unreplicate/average metrics similar to training log
-                 if is_distributed:
-                      unreplicated_eval_metrics = [flax_utils.unreplicate(m) for m in eval_metrics_list]
-                      avg_eval_metrics = jax.tree_util.tree_map(lambda *x: np.mean([i.item() for i in x]), *unreplicated_eval_metrics)
-                 else:
-                      avg_eval_metrics = jax.tree_util.tree_map(lambda *x: np.mean([i.item() for i in x]), *eval_metrics_list)
-
-
-                 eval_duration = time.time() - eval_start_time
-                 print(f"Evaluation finished in {eval_duration:.2f}s over {eval_count} batches.")
-                 print(f"Step: {step} | Eval Loss: {avg_eval_metrics['eval_loss']:.4f} | Eval Perplexity: {avg_eval_metrics['eval_perplexity']:.2f}")
-                 logger.log_metrics(avg_eval_metrics, step, prefix="eval")
-            else:
-                 print("No metrics collected during evaluation.")
-
+            # Call the refactored evaluation function
+            run_evaluation(step, state, model, eval_loader, tokenizer, p_eval_step, logger, config, is_distributed)
 
         # --- Checkpointing ---
         if step % config.training.save_steps == 0:
              print(f"Attempting to save checkpoint at step {step}...")
-             # If distributed, get the state from device 0 to save
              state_to_save = state
              if is_distributed:
                   state_to_save = flax_utils.unreplicate(state)
-
              save_checkpoint(checkpoint_manager, step, state_to_save, config)
-             # Optional: Wait for async save to complete if needed before proceeding far
-             # checkpoint_manager.wait_until_finished()
 
+    # --- Final Actions After Training Loop ---
+    print("Training loop finished.")
 
-    # --- Final Checkpoint ---
-    print("Training finished. Saving final checkpoint...")
-    final_state_to_save = state
-    if is_distributed:
-         final_state_to_save = flax_utils.unreplicate(state)
-    save_checkpoint(checkpoint_manager, step, final_state_to_save, config) # Save final state
-    checkpoint_manager.wait_until_finished() # Wait for final save
+    # Save final checkpoint if training occurred
+    if final_step > start_step: # Check if any training steps were actually run
+        print(f"Saving final checkpoint at step {final_step}...")
+        final_state_to_save = state
+        if is_distributed:
+             final_state_to_save = flax_utils.unreplicate(state)
+        save_checkpoint(checkpoint_manager, final_step, final_state_to_save, config)
+        checkpoint_manager.wait_until_finished() # Wait for final save
+
     logger.close()
-    print("Training complete.")
+    print("Training process complete.")

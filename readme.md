@@ -16,9 +16,21 @@ Run the Script: While still inside the jax_moe_llm_trainer directory in your ter
 
 Bash
 
-python main.py --config configs/config.yaml
+python main.py [OPTIONS]
 
 
-The --config configs/config.yaml part tells the script where to find your configuration file. Since configs/config.yaml is the default value in main.py, you might also be able to just run python main.py, but explicitly specifying it is good practice.
-This command will load the configuration, initialize the dataset, model, and optimizer, and then start the training loop defined in training/trainer.py. You should see output messages in your terminal indicating the progress (loading data, initializing model, training steps, logging, etc.)."# Jax_moe_llm_trainier" 
-"# Jax_moe_llm_trainier" 
+The script will load the configuration, initialize the dataset, model, and optimizer, and then start the training loop defined in `training/trainer.py`. You should see output messages in your terminal indicating the progress (loading data, initializing model, training steps, logging, etc.).
+
+### Command-Line Options
+
+The following command-line arguments are supported:
+
+*   `--config <path>`: Specifies the path to the configuration YAML file.
+    *   Default: `configs/config.yaml`
+    *   Example: `python main.py --config my_custom_config.yaml`
+*   `--eval_only`: If present, the script will skip training and run evaluation only, loading the latest checkpoint found according to the configuration.
+    *   Example: `python main.py --eval_only`
+    *   Example (with custom config): `python main.py --config configs/config.yaml --eval_only`
+
+"# Jax_moe_llm_trainier"
+"# Jax_moe_llm_trainier"

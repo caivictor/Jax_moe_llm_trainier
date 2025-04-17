@@ -35,6 +35,17 @@ class RotaryPositionalEncoding(nn.Module):
         # Ensure head_dim is even
         assert self.dim % 2 == 0, "Dimension must be even for RoPE."
 
+        # --- Add Check for Slice Indices ---
+        end_index = seq_start_index + seq_len
+        if end_index > self.max_len:
+            # Raise a clearer error instead of letting JAX crash later
+            raise ValueError(
+                f"RoPE slicing error: Calculated end index {end_index} (start={seq_start_index}, len={seq_len}) "
+                f"exceeds the precomputed max_len {self.max_len} for positional embeddings. "
+                f"Ensure generation length doesn't exceed model's max sequence length."
+            )
+        # --- End Check ---
+
         # Reshape x if it's the full embedding dim (e.g., before splitting heads)
         original_shape = x.shape
         if len(original_shape) == 3: # (batch, seq_len, embed_dim)
@@ -46,8 +57,9 @@ class RotaryPositionalEncoding(nn.Module):
 
         # Get the corresponding frequencies for the current sequence length and start index
         # Shape: (seq_len, dim / 2)
-        freqs_real = self.freqs_cis_real[seq_start_index : seq_start_index + seq_len, :]
-        freqs_imag = self.freqs_cis_imag[seq_start_index : seq_start_index + seq_len, :]
+        # Use the calculated end_index which is guaranteed to be within bounds now
+        freqs_real = self.freqs_cis_real[seq_start_index : end_index, :]
+        freqs_imag = self.freqs_cis_imag[seq_start_index : end_index, :]
 
         # Add sequence dimension for broadcasting: (1, seq_len, 1, dim / 2)
         freqs_real = freqs_real[None, :, None, :]

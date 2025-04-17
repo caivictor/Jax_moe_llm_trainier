@@ -26,6 +26,12 @@ def main():
         default="configs/config.yaml", # Default config path
         help="Path to the configuration YAML file"
     )
+    # Add the new argument
+    parser.add_argument(
+        "--eval_only",
+        action="store_true", # Makes it a boolean flag, default False
+        help="Run evaluation only using the latest checkpoint"
+    )
     args = parser.parse_args()
 
     # Load configuration
@@ -35,8 +41,8 @@ def main():
     print(yaml.dump(config.__dict__, default_flow_style=False))
 
 
-    # Start training
-    train(config)
+    # Start training (pass the eval_only flag)
+    train(config, eval_only=args.eval_only) # Pass the flag
 
 if __name__ == "__main__":
     main()
